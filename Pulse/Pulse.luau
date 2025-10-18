@@ -1,9 +1,6 @@
 --!strict
 --!native
-local pulse = {Helper = {}, Permissions = {
-	ALL = {game.CreatorId}; -- Unrestricted permission
-	GROUP = {}; -- Set ranks
-}};
+local pulse = {Helper = {}};
 
 --local get_service;
 local game, pcall, unpack, task, warn, error, type, typeof, tostring, clone = game, pcall, unpack, task, warn, error, type, typeof, tostring, table.clone;
@@ -26,10 +23,13 @@ local players = game:GetService("Players");
 local run_service = game:GetService("RunService");
 
 local is_studio: boolean = run_service:IsStudio();
+local permissions = pulse_config.Permissions;
+
 local log = @native function(...: any): ()
 	warn("[Pulse Print]", ...);
 	return;
 end;
+
 
 local assert = @native function(conditional: any, message: string?): ()
 	if (not conditional) then
@@ -135,11 +135,11 @@ end;
 end;
 local has_permission = @native function(user_id: number, action: string): boolean
 	if (action == "ALL") then
-		return (pulse.Permissions.ALL[user_id] ~= nil)
+		return (permissions.ALL[user_id] ~= nil)
 	elseif (action == "GROUP") then
-		return (pulse.Permissions.GROUP[user_id] ~= nil);	
+		return (permissions.GROUP[user_id] ~= nil);	
 	elseif (action == "PERMISSION") then
-		return (pulse.Permissions.GROUP[user_id] ~= nil or pulse.Permissions.ALL[user_id] ~= nil);	
+		return (permissions.GROUP[user_id] ~= nil or permissions.ALL[user_id] ~= nil);	
 	end;
 	return false;
 end;
