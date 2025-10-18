@@ -1,6 +1,9 @@
 --!strict
 --!native
-local pulse = {Helper = {}};
+local pulse = {Helper = {}, Permissions = {
+	ALL = {game.CreatorId}; -- Unrestricted permission
+	GROUP = {}; -- Set ranks
+}};
 
 --local get_service;
 local game, pcall, unpack, task, warn, error, type, typeof, tostring, clone = game, pcall, unpack, task, warn, error, type, typeof, tostring, table.clone;
@@ -22,11 +25,12 @@ local yield_time: number = pulse_config.yield_time;
 local players = game:GetService("Players");
 local run_service = game:GetService("RunService");
 
-script.Config:Destroy();
+local is_studio: boolean = run_service:IsStudio();
 local log = @native function(...: any): ()
 	warn("[Pulse Print]", ...);
 	return;
 end;
+
 local assert = @native function(conditional: any, message: string?): ()
 	if (not conditional) then
 		warn("[Pulse Expection]", message or "Assert Failure", debug.traceback("", 3));
@@ -35,7 +39,6 @@ local assert = @native function(conditional: any, message: string?): ()
 	end;
 	return;	
 end;
-
 local Handler = @native function(Method: string, ...: any): any
 	local arugments: {[number]: any} = {...};
 	local count: number = 0;
@@ -61,6 +64,7 @@ local Handler = @native function(Method: string, ...: any): any
 	if (type(data) == "string") then return nil; end;
 	return data;
 end;
+
 local GetGroupInfoAsync = @native function(group_id: number): group_info_async_result
 	local count: number = 0;
 	local succ: boolean, group_information: group_info_async_result = pcall(group_service.GetGroupInfoAsync, group_service, group_id);
@@ -78,19 +82,18 @@ local GetGroupInfoAsync = @native function(group_id: number): group_info_async_r
 	end;
 	return group_information;
 end;
-
 type group_member = {
 	user_id: number;
 	role_name: string;	
 	user_name: string?; -- This will be automatically written.
 	role_index: number? -- This will be automatically written.
 };
+
 type mock_list = {
 	group_id: number;
 	Owner: number;
 	Members: {[number]: group_member};
 };
-
 type group_info_async_result = {
 	EmblemUrl: string;
 	Id: number;
@@ -102,6 +105,7 @@ type group_info_async_result = {
 	Description: string;
 	Roles: {[number]: {Name: string, Rank: number}};
 };
+
 type mock_group = {
 	Owner: number;
 	GroupInfoAsyncResult: group_info_async_result;
@@ -122,13 +126,50 @@ type mock_group = {
 		end;
 	end;
 	
-	
 	assert(result ~= 0, `GetRoleInfo failure.`);
 	return result, role;
 end;
 
 @native function pulse.Helper:GetRegisteredGroups()
 	return clone(new_data);
+end;
+local has_permission = @native function(user_id: number, action: string): boolean
+	if (action == "ALL") then
+		return (pulse.Permissions.ALL[user_id] ~= nil)
+	elseif (action == "GROUP") then
+		return (pulse.Permissions.GROUP[user_id] ~= nil);	
+	elseif (action == "PERMISSION") then
+		return (pulse.Permissions.GROUP[user_id] ~= nil or pulse.Permissions.ALL[user_id] ~= nil);	
+	end;
+	return false;
+end;
+
+
+@native function pulse:KickUserAsync(group_id: number, user_id: number, caller: Player?): ()
+	assert(user_id and type(user_id) == "number", `KickUserAsync expects a number for user_id but got {typeof(user_id)}`);
+	assert(is_studio or caller ~= nil or typeof(caller) == "Instance" or not caller:IsA("Player"), "The caller parameter is required.");
+	
+	assert(group_id and type(group_id) == "number", `KickUserAsync expects a number for group_id but got {typeof(group_id)}`);
+	local group = new_data[tostring(group_id)];
+	
+	assert(group, `Group ID {group_id} isn't registered by Pulse.`);
+	assert(group.Owner ~= user_id, `Cannot kick Group Owner.`);
+	
+	local member = group.Members[tostring(user_id)];
+	assert(member, `User ID {user_id} is not a valid member of group {group.GroupInfoAsyncResult.Name}`);
+	
+	if (caller) then
+		local caller_member = group.Members[tostring(caller.UserId)];
+		if (not caller_member or caller_member.role_index >= member.role_index or caller.UserId == user_id and caller.UserId ~= game.CreatorId) then
+			log(`Illegal kick attempt from {caller}`);
+			return;
+		end;
+	end;
+	
+	group.Members[tostring(user_id)] = nil :: never;
+	log(`{member.user_name} has been kicked from group {group.GroupInfoAsyncResult.Name} by {is_studio and "STUDIO" or tostring(caller)}`);
+	
+	return;
 end;
 @native function pulse.MockGroup(group_list: {[any]:  mock_list}): ()
 	assert(group_list and type(group_list) == "table", `[Pulse Critical] Expected group_list to be a table when calling .MockGroup, but got {typeof(group_list)}.`);
@@ -148,10 +189,13 @@ end;
 		for i: any, data: any in (v.Members) do
 			local new_data = data;
 			table.remove(v.Members, i);
+			
 			new_data.role_index = pulse.Helper.GetRoleInfo(v.group_id, data.role_name) :: number;
 			new_data.user_name = players:GetNameFromUserIdAsync(data.user_id) :: string;
+			
 			assert(type(new_data.role_index) == "number", `[Pulse Critcal] Role name {data.role_name} is not a valid role of group {group_information.Name}`);
 			local user_id: any = tostring(data.user_id);
+			
 			v.Members[user_id] = new_data;
 			log("Ranked", new_data.user_name, "in group", group_information.Name, "to rank", data.role_name);
 		end;
@@ -167,13 +211,70 @@ end;
 	return;
 end;
 
+@native function pulse:JoinGroupAsync(user_id: number, group_id: number, rank: string, caller: Player?): ()
+	assert(user_id and type(user_id) == "number", `JoinGroupAsync expects a number for user_id but got {typeof(user_id)}`);
+	assert(group_id and type(group_id) == "number", `JoinGroupAsync expects a number for group_id but got {typeof(group_id)}`);
+	
+	assert(rank and type(rank) == "string", `JoinGroupAsync expects a rank for rank but got {typeof(rank)}`);
+	assert(is_studio or caller ~= nil or typeof(caller) == "Instance" or not caller:IsA("Player"), "The caller parameter is required.");
+	
+	assert(user_id ~= game.CreatorId, "You cannot perform actions on Game Creator.");
+	assert(new_data[tostring(group_id)], `JoinGroupAsync failed because provided group id {group_id} isn't registered by Pulse.`);
+	
+	assert(new_data[tostring(group_id)].Members[tostring(user_id)] == nil, `{user_id} is already a member of group {group_id}, use RankUserAsync if you wish to change the user's rank.`);
+	local group = new_data[tostring(group_id)];
+	
+	if (caller) then
+		local caller_member_data: group_member = group.Members[tostring(caller.UserId)];
+		if (not caller_member_data or not has_permission(caller.UserId, "ALL")) then
+			log(`Unauthroized group join attempt from {caller} to {user_id}`);
+			return;
+		end;
+		if (not is_studio and caller.UserId == user_id and game.CreatorId ~= user_id) then
+			log(`Illegal JoinGroupAsync attempt.`);
+			return;
+		end;
+	end;
+	
+	local index, info = pulse.Helper.GetRoleInfo(group_id, rank);
+	local user_name: string = players:GetNameFromUserIdAsync(user_id);
+	
+	if (not user_name) then
+		log(`JoinGroupAsync failure.`);
+		return;
+	end;
+	new_data[tostring(group_id)].Members[tostring(user_id)] = {
+		user_id = user_id;
+		role_name = info.Name;
+		role_index = index;
+		user_name = players:GetNameFromUserIdAsync(user_id);
+	};
+	
+	log(`[JoinGroupAsync] added {user_name} to group {group.GroupInfoAsyncResult.Name} as rank {info.Name}`);
+	return;
+end;
+
+@native function pulse:RemoveGroup(group_id: number): ()
+	assert(group_id and type(group_id) == "number", `RemoveGroup expects a number for group_id but got {typeof(group_id)}`);
+	assert(is_studio, `RemoveGroup is restricted to only Studio.`);
+	
+	local group_data = new_data[tostring(group_id)];
+	assert(group_data, `{group_id} is not a valid group.`);
+	
+	new_data[tostring(group_id)] = nil :: never;
+	log(`Removed Group {group_data.GroupInfoAsyncResult.Name}`);
+	
+	return;
+end;
 @native function pulse:RankUserAsync(user_id: number, group_id: number, rank: string, caller: Player?): ()
 	assert(user_id and type(user_id) == "number", `RankUserAsync expects a number for user_id but got {typeof(user_id)}`);
 	assert(group_id and type(group_id) == "number", `RankUserAsync expects a number for group_id but got {typeof(group_id)}`);
+	
 	assert(rank and type(rank) == "string", `RankUserAsync expects a rank for rank but got {typeof(rank)}`);
 	assert(new_data[tostring(group_id)], `RankUserAsync failed because provided group id {group_id} isn't registered by Pulse.`);
+	
 	assert(rank ~= "Guest", `Please use KickUserAsync if you wish to kick players from groups.`);
-	assert(run_service:IsStudio() or caller ~= nil or typeof(caller) ~= "Instance" or caller:IsA("Player"), "The caller parameter is required.");
+	assert(is_studio or caller ~= nil or typeof(caller) == "Instance" or not caller:IsA("Player"), "The caller parameter is required.");
 	
 	local group: mock_group = new_data[tostring(group_id)];
 	local member_data = group.Members[tostring(user_id)] :: group_member;
@@ -191,7 +292,7 @@ end;
 	
 	if (caller) then
 		local caller_member_data: group_member = group.Members[tostring(caller.UserId)];
-		if (not caller_member_data or caller_member_data.role_index >= member_data.role_index) then
+		if (not caller_member_data or caller_member_data.role_index >= member_data.role_index or not has_permission(caller.UserId, "PERMISSION") and caller.UserId ~= game.CreatorId) then
 			log(`Unauthroized rank set attempt from {caller} to {member_data.user_name}`);
 			return;
 		end;
@@ -216,7 +317,7 @@ if (existing_data) then
 	new_data = existing_data;
 end;
 game:BindToClose(@native function(): ()
-	if (run_service:IsStudio() and not pulse_config.save_in_studio) then return; end;
+	if (is_studio and not pulse_config.save_in_studio) then log("save_in_studio is disabled, changes will not save.") return; end;
 	Handler("SetAsync", "Pulse", new_data);
 	return;
 end);
