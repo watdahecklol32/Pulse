@@ -89,12 +89,12 @@ type group_member = {
 	role_index: number? -- This will be automatically written.
 };
 
-type mock_list = {
+export type mock_list = {
 	group_id: number;
 	Owner: number;
 	Members: {[number]: group_member};
 };
-type group_info_async_result = {
+export type group_info_async_result = {
 	EmblemUrl: string;
 	Id: number;
 	Name: string;
@@ -106,7 +106,7 @@ type group_info_async_result = {
 	Roles: {[number]: {Name: string, Rank: number}};
 };
 
-type mock_group = {
+export type mock_group = {
 	Owner: number;
 	GroupInfoAsyncResult: group_info_async_result;
 	Id: number;
