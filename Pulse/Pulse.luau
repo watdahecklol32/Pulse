@@ -1,4 +1,4 @@
---!strict
+--!nocheck
 --!native
 local pulse = {Helper = {}};
 
@@ -26,16 +26,14 @@ local is_studio: boolean = run_service:IsStudio();
 local permissions = pulse_config.Permissions;
 
 local log = @native function(...: any): ()
-	warn("[Pulse Print]", ...);
+	warn("[Pulse Output]", ...);
 	return;
 end;
 
 
 local assert = @native function(conditional: any, message: string?): ()
 	if (not conditional) then
-		warn("[Pulse Expection]", message or "Assert Failure", debug.traceback("", 3));
-		return coroutine.yield(coroutine.running());
-		--error(message or "Assert Failure", 2);
+		error(`Pulse Expection: {message or "Assert Failed."}`, 2);
 	end;
 	return;	
 end;
@@ -86,7 +84,8 @@ type group_member = {
 	user_id: number;
 	role_name: string;	
 	user_name: string?; -- This will be automatically written.
-	role_index: number? -- This will be automatically written.
+	role_index: number?; -- This will be automatically written.
+	moderator: boolean
 };
 
 export type mock_list = {
@@ -110,6 +109,7 @@ export type mock_group = {
 	Owner: number;
 	GroupInfoAsyncResult: group_info_async_result;
 	Id: number;
+	banned_users: {[string]: boolean};
 	Members: {[string]: group_member};
 };
 @native function pulse.Helper.GetRoleInfo(group_id: number, role_name: string): (number, {Name: string, Rank: number})
@@ -144,6 +144,63 @@ local has_permission = @native function(user_id: number, action: string): boolea
 	return false;
 end;
 
+@native function pulse:BanUserAsync(group_id: number, user_id: number, caller: Player?): ()
+	assert(user_id and type(user_id) == "number", `BanUserAsync expects a number for user_id but got {typeof(user_id)}`);
+	assert(is_studio or caller ~= nil or typeof(caller) == "Instance" or not caller:IsA("Player"), "The caller parameter is required.");
+	
+	assert(group_id and type(group_id) == "number", `BanUserAsync expects a number for group_id but got {typeof(group_id)}`);
+	local group = new_data[tostring(group_id)];
+	
+	assert(group, `Group ID {group_id} isn't registered by Pulse.`);
+	assert(group.Owner ~= user_id, `You cannot perform actions on Group Owner.`);
+
+	assert(user_id ~= game.CreatorId, "You cannot perform actions on Game Creator.");
+	local member = group.Members[tostring(user_id)];
+	
+	assert(member, `{user_id} is not a valid member of group {group.GroupInfoAsyncResult.Name}`);
+	if (caller) then
+		--[[assert(caller.UserId == user_id, `Attempted to perform Ban operations on self.`);
+		assert(member.moderator == true, `You cannot perform actions on Group Moderator.`)]]
+		
+		if (caller.UserId == user_id) then return; end;
+		local caller_member = group.Members[tostring(caller.UserId)];
+		
+		if (not caller_member or not caller_member.moderator or member.moderator or caller_member.role_index >= member.role_index) then
+			log(`Illegal ban operation from user {caller} to {member.user_name}`);
+			return;	
+		end;
+	end;
+	
+	if (not group.banned_users) then
+		group.banned_users = {};
+	end;
+	group.banned_users[tostring(user_id)] = true;
+	
+	group.Members[tostring(user_id)] = nil :: never;
+	log(`{member.user_name} was banned from group {group.GroupInfoAsyncResult.Name} by moderator {is_studio and "STUDIO" or caller}`);
+	return;
+end;
+@native function pulse:UnbanUserAsync(group_id: number, user_id: number, caller: Player?): ()
+	assert(user_id and type(user_id) == "number", `BanUserAsync expects a number for user_id but got {typeof(user_id)}`);
+	assert(is_studio or caller ~= nil or typeof(caller) == "Instance" or not caller:IsA("Player"), "The caller parameter is required.");
+
+	assert(group_id and type(group_id) == "number", `BanUserAsync expects a number for group_id but got {typeof(group_id)}`);
+	local group = new_data[tostring(group_id)];
+	
+	assert(group, `Group ID {group_id} isn't registered by Pulse.`);
+	if (caller) then
+		local caller_member = group.Members[tostring(caller.UserId)];
+		if (not caller_member or caller.UserId == user_id and caller.UserId ~= game.CreatorId or not caller_member.moderator) then
+			log(`Illegal Unban attempt from {caller}`);
+			return;
+		end;
+	end;
+	
+	group.banned_users[tostring(user_id)] = nil :: never;
+	log(`Moderator {caller or "STUDIO"} has revoked the ban of {user_id} from group {group.GroupInfoAsyncResult.Name}`);
+	
+	return;
+end;
 
 @native function pulse:KickUserAsync(group_id: number, user_id: number, caller: Player?): ()
 	assert(user_id and type(user_id) == "number", `KickUserAsync expects a number for user_id but got {typeof(user_id)}`);
@@ -153,14 +210,15 @@ end;
 	local group = new_data[tostring(group_id)];
 	
 	assert(group, `Group ID {group_id} isn't registered by Pulse.`);
-	assert(group.Owner ~= user_id, `Cannot kick Group Owner.`);
-	
+	assert(user_id ~= game.CreatorId, "You cannot perform actions on Game Creator.");
+
+	assert(group.Owner ~= user_id, `Cannot kick Group Owner.`);	
 	local member = group.Members[tostring(user_id)];
-	assert(member, `User ID {user_id} is not a valid member of group {group.GroupInfoAsyncResult.Name}`);
 	
+	assert(member, `User ID {user_id} is not a valid member of group {group.GroupInfoAsyncResult.Name}`);
 	if (caller) then
 		local caller_member = group.Members[tostring(caller.UserId)];
-		if (not caller_member or caller_member.role_index >= member.role_index or caller.UserId == user_id and caller.UserId ~= game.CreatorId) then
+		if (not caller_member or caller_member.role_index >= member.role_index or caller.UserId == user_id and caller.UserId ~= game.CreatorId or not caller_member.moderator) then
 			log(`Illegal kick attempt from {caller}`);
 			return;
 		end;
@@ -204,6 +262,7 @@ end;
 			Owner = v.Owner;
 			Members = v.Members;
 			Id = group_information.Id;
+			banned_users = {};
 			GroupInfoAsyncResult = group_information;
 		} :: any;
 	end;
@@ -211,7 +270,26 @@ end;
 	return;
 end;
 
-@native function pulse:JoinGroupAsync(user_id: number, group_id: number, rank: string, caller: Player?): ()
+@native function pulse:SetGroupModerator(user_id: number, group_id: number, operand: boolean): ()
+	if (not is_studio) then -- Perhaps change?
+		log(`SetGroupModerator is restricted to studio only.`);
+		return;
+	end;
+	assert(user_id and type(user_id) == "number", `SetGroupModerator expects a number for user_id but got {typeof(user_id)}`);
+	assert(group_id and type(group_id) == "number", `SetGroupModerator expects a number for group_id but got {typeof(group_id)}`);
+	
+	assert(new_data[tostring(group_id)], `SetGroupModerator failed because provided group id {group_id} isn't registered by Pulse.`);
+	local group = new_data[tostring(group_id)];
+	
+	local member = group.Members[tostring(user_id)];
+	assert(member, `{user_id} is not a valid member of group {group_id}`);
+	
+	member.moderator = operand;
+	log(`Set {member.user_name}'s moderator status on group {group.GroupInfoAsyncResult.Name} to {operand}.`);
+	
+	return;
+end;
+@native function pulse:JoinGroupAsync(user_id: number, group_id: number, rank: string, caller: Player?, moderator: boolean?): ()
 	assert(user_id and type(user_id) == "number", `JoinGroupAsync expects a number for user_id but got {typeof(user_id)}`);
 	assert(group_id and type(group_id) == "number", `JoinGroupAsync expects a number for group_id but got {typeof(group_id)}`);
 	
@@ -224,7 +302,7 @@ end;
 	assert(new_data[tostring(group_id)].Members[tostring(user_id)] == nil, `{user_id} is already a member of group {group_id}, use RankUserAsync if you wish to change the user's rank.`);
 	local group = new_data[tostring(group_id)];
 	
-	if (caller) then
+	if (caller) then -- Perhaps change?
 		local caller_member_data: group_member = group.Members[tostring(caller.UserId)];
 		if (not caller_member_data or not has_permission(caller.UserId, "ALL")) then
 			log(`Unauthroized group join attempt from {caller} to {user_id}`);
@@ -243,11 +321,17 @@ end;
 		log(`JoinGroupAsync failure.`);
 		return;
 	end;
+	
+	if group.banned_users[tostring(user_id)] then
+		log(`{user_name} is banned from group {group.GroupInfoAsyncResult.Name}.`);
+		return;
+	end;
 	new_data[tostring(group_id)].Members[tostring(user_id)] = {
 		user_id = user_id;
 		role_name = info.Name;
 		role_index = index;
 		user_name = players:GetNameFromUserIdAsync(user_id);
+		moderator = (moderator or false);
 	};
 	
 	log(`[JoinGroupAsync] added {user_name} to group {group.GroupInfoAsyncResult.Name} as rank {info.Name}`);
@@ -306,6 +390,7 @@ end;
 		role_name = role.Name;
 		role_index = index;
 		user_name = member_data.user_name;
+		moderator = (member_data.moderator or false);
 	};
 	log("Ranked", member_data.user_name, "in group", group.GroupInfoAsyncResult.Name, "to rank", role.Name);
 
